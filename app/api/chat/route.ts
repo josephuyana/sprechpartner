@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const SYSTEM_PROMPT_CHAT = `You are a friendly German teacher conducting a small-talk practice session. Your role:
-- Speak ONLY in German (use clear, natural German suitable for learners)
-- Simulate casual small talk: greetings, weather, weekend plans, hobbies, etc.
-- Do NOT correct the student's errors during the conversation—just continue naturally as if in a real chat
-- Keep responses short (1–3 sentences) for spoken output
-- Match the student's level; if they make mistakes, still respond in a natural, encouraging way`;
-
-const SYSTEM_PROMPT_START = `You are a friendly German teacher. The student has just joined a small-talk practice session. Greet them warmly in German and start a casual conversation—e.g. ask how they are or what they've been up to. Keep it brief: 1–2 sentences. Speak only in German.`;
+import { buildSystemPrompt, VocabStruggle } from "@/lib/systemPrompt";
+import { Scenario } from "@/lib/scenario";
 
 const SYSTEM_PROMPT_FEEDBACK = `You are a German teacher. The student has finished a small-talk practice conversation. Analyze the ENTIRE conversation and list ALL the errors the student made:
 - Grammar mistakes (articles, verb conjugation, word order, cases, etc.)
@@ -30,31 +23,56 @@ export async function POST(request: NextRequest) {
     messages?: { role: string; content: string }[];
     conversation?: { user: string; assistant: string }[];
     userMessage?: string;
+    scenario?: Scenario;
+    userName?: string;
+    level?: string;
+    correction?: string;
+    vocabStruggles?: VocabStruggle[];
   };
+
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON body" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { mode = "chat", messages: rawMessages, conversation, userMessage } = body;
+  const {
+    mode = "chat",
+    messages: rawMessages,
+    conversation,
+    userMessage,
+    scenario,
+    userName = "the student",
+    level = "B1",
+    correction = "major",
+    vocabStruggles = [],
+  } = body;
 
   let messages: { role: string; content: string }[] = [];
 
-  if (mode === "start") {
-    messages = [
-      { role: "system", content: SYSTEM_PROMPT_START },
-      { role: "user", content: "Begin the conversation. Greet me in German." },
-    ];
+  if ((mode === "start" || mode === "chat") && scenario) {
+    // Build the dynamic system prompt from the scenario
+    const systemPrompt = buildSystemPrompt(scenario, userName, vocabStruggles, level as any, correction as any);
+
+    if (mode === "start") {
+      messages = [
+        { role: "system", content: systemPrompt },
+        // If AI initiates, prompt it to say the opening line
+        // If user initiates, this won't be called — the page handles it
+        { role: "user", content: "Begin the conversation with your opening line." },
+      ];
+    } else {
+      // mode === "chat"
+      const history = Array.isArray(rawMessages) ? rawMessages : [];
+      messages = [
+        { role: "system", content: systemPrompt },
+        ...history,
+        { role: "user", content: userMessage ?? "" },
+      ];
+    }
   } else if (mode === "feedback" && Array.isArray(conversation) && conversation.length > 0) {
     const conversationText = conversation
-      .map(
-        (turn) =>
-          `Student: ${turn.user}\nTeacher: ${turn.assistant}`
-      )
+      .map((turn) => `Student: ${turn.user}\nTeacher: ${turn.assistant}`)
       .join("\n\n");
     messages = [
       { role: "system", content: SYSTEM_PROMPT_FEEDBACK },
@@ -63,16 +81,9 @@ export async function POST(request: NextRequest) {
         content: `Here is the conversation. List all errors the student made:\n\n${conversationText}`,
       },
     ];
-  } else if (mode === "chat" && typeof userMessage === "string") {
-    const history = Array.isArray(rawMessages) ? rawMessages : [];
-    messages = [
-      { role: "system", content: SYSTEM_PROMPT_CHAT },
-      ...history,
-      { role: "user", content: userMessage },
-    ];
   } else {
     return NextResponse.json(
-      { error: "Invalid request: need mode 'start', 'chat' with userMessage, or 'feedback' with conversation" },
+      { error: "Invalid request: need a valid mode and scenario (or conversation for feedback)" },
       { status: 400 }
     );
   }
